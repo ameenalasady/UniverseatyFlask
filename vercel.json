@@ -1,3 +1,9 @@
 {
-  "rewrites": [{ "source": "/(.*)", "destination": "/api/main" }]
+  "rewrites": [{ "source": "/(.*)", "destination": "/api/main" }],
+  "functions": {
+    "api/main.py": {
+      "runtime": "python3.9",
+      "includeFiles": "tasks.py"
+    }
+  }
 }
