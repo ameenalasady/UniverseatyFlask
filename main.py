@@ -4,7 +4,7 @@ from flask_cors import CORS
 from datetime import datetime, timedelta
 
 
-from tasks import get_open_seats, notify_open_seats_enqueue, printAllJobs
+from tasks import get_open_seats, notify_open_seats_enqueue, printAllJobs, initiateEandT
 
 app = Flask(__name__)
 CORS(app)
@@ -67,6 +67,8 @@ if __name__ == '__main__':
             requests = json.load(f)
     except json.JSONDecodeError:
         requests = []
+
+    initiateEandT()
 
     for oneRequest in requests:
 
