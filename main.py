@@ -4,7 +4,7 @@ from flask_cors import CORS
 from datetime import datetime, timedelta
 
 
-from tasks import get_open_seats, notify_open_seats_enqueue
+from tasks import get_open_seats, notify_open_seats_enqueue, printAllJobs
 
 app = Flask(__name__)
 CORS(app)
@@ -73,5 +73,7 @@ if __name__ == '__main__':
         notify_open_seats_enqueue(oneRequest['course_code'], oneRequest['term'], oneRequest['section'],
                                   oneRequest['contact_method'], oneRequest['contact_info'],
                                   datetime.strptime(oneRequest['expires_at'], '%Y-%m-%d %H:%M:%S'), False)
+
+    printAllJobs()
 
     app.run(host='0.0.0.0', port=5000, debug=False)
