@@ -13,7 +13,7 @@ import signal
 import sys
 from threading import Lock
 from twilio.rest import Client
-import keys
+import os
 from pytz import timezone as timezonepytz
 
 scheduler = BackgroundScheduler()
