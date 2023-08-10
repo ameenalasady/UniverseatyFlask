@@ -187,12 +187,6 @@ def calculateT():
     return minutes
 
 
-def initiateEandT():
-    course_code = "COMPSCI-1XC3"
-    term = "3202340"
-    get_open_seats(course_code, term)
-
-
 def notify_open_seats_enqueue(course_code, term, section, contact_method, contact_info, expires_at, initiate):
 
     if initiate:
