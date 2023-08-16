@@ -37,6 +37,14 @@ def notify_open_seats():
     contact_method = request.args.get('contact_method')
     contact_info = request.args.get('contact_info')
 
+    with open(f'{term}.json', 'r') as f:
+        courses = json.load(f)
+        for course in courses:
+            if course['Text'] == course_code:
+                break
+        else:
+            return make_response('Course Error', 400)
+
     # Validate the contact_info based on the contact_method
     if contact_method == 'email':
         # Check if the email is valid using a regular expression
