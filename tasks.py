@@ -12,6 +12,10 @@ from twilio.rest import Client
 from dotenv import load_dotenv
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import logging
+
+logging.basicConfig(filename='flasklogs.log', level=logging.INFO,
+                    format='%(asctime)s %(levelname)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
 scheduler = BackgroundScheduler()
 scheduler.start()
@@ -23,6 +27,22 @@ load_dotenv(dotenv_path=env_path)
 lock = Lock()
 
 api_endpoint = "https://mytimetable.mcmaster.ca/getclassdata.jsp"
+
+login_url = 'https://mytimetable.mcmaster.ca/login.jsp'
+
+data = os.environ.get('LOGINDATA')
+
+headersLogin = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/116.0',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.5',
+    'Content-Type': 'application/x-www-form-urlencoded',
+    'Origin': 'https://mytimetable.mcmaster.ca',
+    'Referer': 'https://mytimetable.mcmaster.ca/'
+}
+
+
+session = requests.Session()
 
 
 def get_open_seats(course, term):
@@ -42,7 +62,7 @@ def get_open_seats(course, term):
                 't': str(t_value),
                 'e': str(e),
             }
-            response = requests.get(api_endpoint, params=params)
+            response = session.get(api_endpoint, params=params, timeout=10)
             print(f"Trying t={t_value}")
             if "Check your PC time and timezone" not in response.text:
                 return t_value
@@ -55,7 +75,7 @@ def get_open_seats(course, term):
                 't': str(t),
                 'e': str(e_value),
             }
-            response = requests.get(api_endpoint, params=params)
+            response = session.get(api_endpoint, params=params, timeout=10)
             print(f"Trying e={e_value}")
             if "Not Authorized" not in response.text:
                 return e_value
@@ -130,7 +150,7 @@ def get_open_seats(course, term):
             'e': str(e),
         }
 
-        response = requests.get(api_endpoint, params=params)
+        response = session.get(api_endpoint, params=params, timeout=10)
 
         # print(response.text)
 
@@ -162,24 +182,42 @@ def remove_expired_contacts():
     with open('requests.json', 'r') as f:
         data = json.load(f)
 
-    for course in data:
+    for course in data[:]:
         course_code = course['course_code']
-        section = course['section']
+        term = course['term']
         contacts = course['contacts']
         for contact in contacts[:]:
+            section = contact['section']
             contact_method = contact['contact_method']
-            contact_info = contact['contact_info']
-            expires_at = datetime.strptime(
-                contact['expires_at'], '%Y-%m-%d %H:%M:%S')
-            if datetime.now() > expires_at:
-                # Send a message to the user informing them that their subscription has expired
-                message = f"Your subscription for {course_code} section {section} has expired!"
-                if contact_method == 'email':
-                    send_email(contact_info, message)
-                elif contact_method == 'phone':
-                    send_sms(contact_info, message)
-                print(f"Sent expiration notification: {message}")
+            contact_info_list = contact['contact_info']
+            expires_at_list = contact['expires_at']
+            for i in range(len(contact_info_list)-1, -1, -1):
+                contact_info = contact_info_list[i]
+                expires_at = datetime.strptime(
+                    expires_at_list[i], '%Y-%m-%d %H:%M:%S')
+                if datetime.now() > expires_at:
+                    # Send a message to the user informing them that their subscription has expired
+                    message = f"Your subscription for {course_code} section {section} has expired!"
+                    if contact_method == 'email':
+                        send_email(contact_info, message)
+                    elif contact_method == 'phone':
+                        send_sms(contact_info, message)
+                    logging.info(
+                        f"Sent expiration notification: {message} to {contact_info}")
+                    del contact_info_list[i]
+                    del expires_at_list[i]
+                    logging.info(
+                        f"Removed {contact_info}, {course_code}, {section}, {expires_at}")
+
+            # If the contact has no more contact_info, remove it from the contacts
+            if not contact_info_list:
                 contacts.remove(contact)
+                logging.info(f"Removed contact from section {section}")
+
+        # If the course has no more contacts, remove it from the data
+        if not contacts:
+            data.remove(course)
+            logging.info(f"Removed course {course_code} from data")
 
     with open('requests.json', 'w') as f:
         json.dump(data, f, indent=4)
@@ -189,54 +227,111 @@ def schedule_remove_expired_contacts():
     scheduler.add_job(remove_expired_contacts, 'interval', minutes=1)
 
 
-def notify_open_seats_enqueue(course_code, term, section):
+def process_scraped_json():
 
-    scheduler.add_job(check_open_seats_enqueue, 'interval', seconds=10, args=(
-        course_code, term, section))
+    session.post(login_url, data=data, headers=headersLogin, timeout=10)
+
+    with open('requests.json', 'r') as f:
+        requests = json.load(f)
+    for request in requests:
+        course_code = request['course_code']
+        term = request['term']
+        check_open_seats_enqueue(course_code, term)
 
 
-def check_open_seats_enqueue(course_code, term, section):
+def enqueue_jobs():
+    scheduler.add_job(process_scraped_json, 'interval', seconds=90)
+
+
+def check_open_seats_enqueue(course_code, term):
     result = json.loads(get_open_seats(course_code, term))
 
-    # Check if there are open seats for the specified section
-    lec_section = next(
-        (lec for lec in result['LEC'] if lec['section'] == section), None)
-    if lec_section and lec_section['open_seats'] > 0:
-        # If there are open seats, send a notification to all users who have requested to be notified
-        with open('requests.json', 'r') as f:
-            requests = json.load(f)
+    with open('requests.json', 'r') as f:
+        requests = json.load(f)
 
-        # Find the entry with the specified course_code, term, and section
-        entry = next((request for request in requests if request['course_code'] == course_code and request['term'] ==
-                      term and request['section'] == section), None)
+    # Find the entry with the specified course_code and term
+    entry = next((request for request in requests if request['course_code'] == course_code and request['term'] ==
+                  term), None)
 
-        if entry:
-            # Loop through all contacts in the entry's contacts list
-            for contact in entry['contacts']:
-                contact_method = contact['contact_method']
-                contact_info = contact['contact_info']
+    if entry:
+        for contact in entry['contacts']:
+            section = contact['section']
+            # Check if there are open seats for the specified section
+            lec_section = next(
+                (lec for lec in result['LEC'] if lec['section'] == section), None)
+            lab_section = next(
+                (lab for lab in result['LAB'] if lab['section'] == section), None)
+            tut_section = next(
+                (tut for tut in result['TUT'] if tut['section'] == section), None)
 
-                # Send a notification to the user using their specified contact method
-                message = f"There are {lec_section['open_seats']} open seats for {course_code} section {section}! Tracking will now stop."
-                if contact_method == 'email':
-                    send_email(contact_info, message)
-                elif contact_method == 'phone':
-                    send_sms(contact_info, message)
-                print(f"Sent notification: {message}")
+            if lec_section:
+                logging.info(f"Searched: {course_code:<14} {lec_section}")
+            if lab_section:
+                logging.info(f"Searched: {course_code:<14} {lab_section}")
+            if tut_section:
+                logging.info(f"Searched: {course_code:<14} {tut_section}")
 
-                for job in scheduler.get_jobs():
-                    # Check if the job has the specified arguments
-                    if job.args == (course_code, term, section):
-                        # Remove the job
-                        scheduler.remove_job(job.id)
+            # Determine which section has open seats
+            open_seats_section = None
+            open_seats_count = 0
+            if lec_section and lec_section['open_seats'] > 0:
+                open_seats_section = lec_section
+                open_seats_count = lec_section['open_seats']
+            elif lab_section and lab_section['open_seats'] > 0:
+                open_seats_section = lab_section
+                open_seats_count = lab_section['open_seats']
+            elif tut_section and tut_section['open_seats'] > 0:
+                open_seats_section = tut_section
+                open_seats_count = tut_section['open_seats']
 
-            # Delete the entry from requests.json
-            requests.remove(entry)
-            with open('requests.json', 'w') as f:
-                json.dump(requests, f)
-    else:
-        print(
-            f"{course_code}, {term}, {section}: No open seats found")
+            if open_seats_section:
+                # If there are open seats, send a notification to all users who have requested to be notified
+                with open('requests.json', 'r') as f:
+                    requests = json.load(f)
+
+                # Find the entry with the specified course_code and term
+                entry = next((request for request in requests if request['course_code'] == course_code and request['term'] ==
+                              term), None)
+                if entry:
+                    # Loop through all contacts in the entry's contacts list
+                    for contact in entry['contacts']:
+                        if contact['section'] == section:
+                            contact_method = contact['contact_method']
+                            contact_info_list = contact['contact_info']
+                            expires_at_list = contact['expires_at']
+                            for i in range(len(contact_info_list)-1, -1, -1):
+                                contact_info = contact_info_list[i]
+
+                                # Send a notification to the user using their specified contact method
+                                message = f"There are {open_seats_count} open seats for {course_code} section {section}! Tracking will now stop."
+                                if contact_method == 'email':
+                                    send_email(contact_info, message)
+                                    logging.info(
+                                        f'Sent "{message}" to {contact_info}.')
+                                elif contact_method == 'phone':
+                                    send_sms(contact_info, message)
+                                    logging.info(
+                                        f'Sent "{message}" to {contact_info}.')
+                                print(
+                                    f"Sent notification: {message} to {contact_info}")
+
+                                del contact_info_list[i]
+                                del expires_at_list[i]
+
+                            # Update the contact_info and expires_at lists in the requests variable unconditionally
+                            contact['contact_info'] = contact_info_list
+                            contact['expires_at'] = expires_at_list
+
+                    entry['contacts'] = [contact for contact in entry['contacts']
+                                         if contact['contact_info'] or contact['expires_at']]
+
+                    # Unconditionally write the updated requests variable to requests.json
+                    with open('requests.json', 'w') as f:
+                        json.dump(requests, f)
+
+            else:
+                print(
+                    f"{course_code}, {term}, {section}: No open seats found")
 
 
 def sendConfirmationEmail(course_code, section, contact_method, contact_info, expires_at_et_str):
