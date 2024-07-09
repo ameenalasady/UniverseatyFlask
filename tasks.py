@@ -6,13 +6,11 @@ from email.message import EmailMessage
 import ssl
 import smtplib
 from apscheduler.schedulers.background import BackgroundScheduler
-import pickle
 from threading import Lock
-from twilio.rest import Client
 from dotenv import load_dotenv
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
+import time
 
 logging.basicConfig(filename='flasklogs.log', level=logging.DEBUG,
                     format='%(asctime)s %(levelname)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
@@ -46,15 +44,16 @@ headersLogin = {
 session = requests.Session()
 
 
+def get_t_and_e():
+    t = (int(time.time() / 60)) % 1000
+    e = t % 3 + t % 39 + t % 42
+    return t, e
+
+
 def get_open_seats(courses, term):
     all_courses_results = {}
     with lock:
-
-        try:
-            with open("te_values.pickle", "rb") as f:
-                t, e = pickle.load(f)
-        except (FileNotFoundError, ValueError):
-            t, e = 0, 0
+        t, e = get_t_and_e()
 
         params = {
             'term': str(term),
@@ -66,102 +65,6 @@ def get_open_seats(courses, term):
             params[f'course_{i}_0'] = str(course)
 
         response = session.get(api_endpoint, params=params, timeout=10)
-
-        if "Please correct your device's timezone and time." in response.text or "Not Authorized" in response.text:
-
-            def check_t(t_value):
-                params = {
-                    'term': str(term),
-                    't': str(t_value),
-                    'e': str(e),
-                }
-                for i, course in enumerate(courses):
-                    params[f'course_{i}_0'] = str(course)
-                response = session.get(api_endpoint, params=params, timeout=10)
-                print(f"Trying t={t_value}")
-                if "Please correct your device's timezone and time." not in response.text:
-                    return t_value
-                return None
-
-            def check_e(e_value):
-                params = {
-                    'term': str(term),
-                    't': str(t),
-                    'e': str(e_value),
-                }
-                for i, course in enumerate(courses):
-                    params[f'course_{i}_0'] = str(course)
-                response = session.get(api_endpoint, params=params, timeout=10)
-                print(f"Trying e={e_value}")
-                if "Not Authorized" not in response.text:
-                    return e_value
-                return None
-
-            # Try stored t value and its neighbors before brute forcing
-            found_t = False
-            for t_value in [t, t+1, t-1, t+2, t-2]:
-                result = check_t(t_value)
-                if result is not None:
-                    # Found correct t value
-                    t = result
-                    found_t = True
-                    break
-
-            if not found_t:
-                # Try all other t values until "Check your PC time and timezone" is not seen
-                with ThreadPoolExecutor() as executor:
-                    futures = [executor.submit(check_t, t_value)
-                               for t_value in range(1441)]
-                    for future in as_completed(futures):
-                        result = future.result()
-                        if result is not None:
-                            # Found correct t value
-                            print(f'Working t value is {result}')
-                            t = result
-                            # Cancel remaining futures
-                            for future in futures:
-                                future.cancel()
-                            break
-
-            # Try stored e value and its neighbors before brute forcing
-            found_e = False
-            for e_value in [e, e+3, e+6, e-3, e-6]:
-                result = check_e(e_value)
-                if result is not None:
-                    # Found correct e value
-                    e = result
-                    found_e = True
-                    break
-
-            if not found_e:
-                # With previously found t value, try all other e values until "Not Authorized" is not seen
-                with ThreadPoolExecutor() as executor:
-                    futures = [executor.submit(check_e, e_value)
-                               for e_value in range(100)]
-                    for future in as_completed(futures):
-                        result = future.result()
-                        if result is not None:
-                            # Found correct e value
-                            print(f'Working e value is {result}')
-                            e = result
-                            # Cancel remaining futures
-                            for future in futures:
-                                future.cancel()
-                            break
-
-            params['t'] = str(t)
-            params['e'] = str(e)
-
-            with open("te_values.pickle", "wb") as f:
-                pickle.dump((t, e), f)
-
-            response = session.get(api_endpoint, params=params, timeout=10)
-
-        # Store new t and e values in pickle file
-        with open("te_values.pickle", "wb") as f:
-            pickle.dump((t, e), f)
-
-        print(f"Success with t={t} and e={e}")
 
         soup = BeautifulSoup(response.text, 'xml')
 
@@ -271,32 +174,31 @@ def enqueue_jobs():
 def process_requests():
 
     open_seats_3202510 = {}
-    open_seats_3202340 = {}
-    open_seats_3202450 = {}  # New term
+    open_seats_3202430 = {}
+    open_seats_3202450 = {}
 
     # Load requests from requests.json
     with open('requests.json', 'r') as f:
         requests = json.load(f)
 
-    # Segregate course codes into 3202340, 3202510 or 3202450
-    term_3202340 = []
+    term_3202430 = []
     term_3202510 = []
-    term_3202450 = []  # New term
+    term_3202450 = []
 
     for request in requests:
-        if request['term'] == '3202340':
-            term_3202340.append(request['course_code'])
+        if request['term'] == '3202430':
+            term_3202430.append(request['course_code'])
         elif request['term'] == '3202510':
             term_3202510.append(request['course_code'])
-        elif request['term'] == '3202450':  # New term
+        elif request['term'] == '3202450':
             term_3202450.append(request['course_code'])
 
     session.post(login_url, data=data, headers=headersLogin, timeout=10)
 
     # Get open seats for each term
-    if term_3202340:
-        open_seats_3202340 = json.loads(
-            get_open_seats(term_3202340, '3202340'))
+    if term_3202430:
+        open_seats_3202430 = json.loads(
+            get_open_seats(term_3202430, '3202430'))
     if term_3202510:
         open_seats_3202510 = json.loads(
             get_open_seats(term_3202510, '3202510'))
@@ -308,11 +210,11 @@ def process_requests():
     change_made = False
     for request in requests:
         course_code = request['course_code']
-        if request['term'] == '3202340':
-            open_seats = open_seats_3202340[course_code]
+        if request['term'] == '3202430':
+            open_seats = open_seats_3202430[course_code]
         elif request['term'] == '3202510':
             open_seats = open_seats_3202510[course_code]
-        elif request['term'] == '3202450':  # New term
+        elif request['term'] == '3202450':
             open_seats = open_seats_3202450[course_code]
 
         for section_type, sections in open_seats.items():
@@ -320,8 +222,6 @@ def process_requests():
                 if section['open_seats'] > 0:
                     section_code = section['section']
                     open_seats_count = section['open_seats']
-                    logging.info(
-                        f"Found {open_seats_count} open seats for {course_code}: {section_type} {section_code}")
                     # Send email to all contacts for this course code and section
                     contacts = [contact for contact in request['contacts'] if contact['type']
                                 == section_type and contact['section'] == section_code]
@@ -353,7 +253,6 @@ def sendConfirmationEmails(courses):
         send_email(contact_info, message)
     elif contact_method == 'phone':
         send_sms(contact_info, message)
-    print(f"Sent subscription confirmation: {message}")
 
 
 def send_email(email_address, message):

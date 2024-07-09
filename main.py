@@ -26,7 +26,7 @@ def get_client_ip():
 
 
 limiter = Limiter(app=app, key_func=get_client_ip,
-                  default_limits=["45 per day", "15 per hour"], storage_uri="memory://",)
+                  default_limits=["200 per day", "50 per hour"], storage_uri="memory://",)
 
 
 logging.basicConfig(filename='flasklogs.log', level=logging.DEBUG,
@@ -87,7 +87,7 @@ def open_seats():
 
 
 @app.route('/notify_open_seats')
-@limiter.limit("10/hour", override_defaults=True)
+@limiter.limit("50/hour", override_defaults=True)
 def notify_open_seats():
     with lock1:
         course_code = request.args.get('course_code')
